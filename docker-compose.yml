@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_DB: mydatabase
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    volumes:
+      # - ./data:/var/lib/postgresql # Persistent data storage
+      - ./init:/docker-entrypoint-initdb.d/ # Initialization scripts
+    ports:
+      - "5432:5432"
