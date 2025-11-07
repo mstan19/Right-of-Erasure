@@ -118,87 +118,89 @@ $$;
 
 -- Anonymization function 
 -- computes sha256(input) and then re-hashes that result hash_times times, finally returning a lowercase hex string. You feed both personal data and random salt so the resulting anon_<digest> is unique and irreversible for your anonymization.
-CREATE OR REPLACE FUNCTION anonymize_user(p_user_id BIGINT)
+CREATE OR REPLACE FUNCTION anonymize_user(anon_user_id BIGINT)
 RETURNS VOID
 LANGUAGE plpgsql
 AS $$
+-- before_abc are variables that capture the data before the overwrite
+-- anon_label: holds the anonymized label
 DECLARE
-  v_email   TEXT;
-  v_first   TEXT;
-  v_last    TEXT;
-  v_usernm  TEXT;
-  v_status  TEXT;
-  v_salt    BYTEA;
-  v_salthex TEXT;
-  v_digest  TEXT;
-  v_tag     TEXT;
+  before_email   TEXT;
+  before_first_name   TEXT;
+  before_last_name    TEXT;
+  before_username  TEXT;
+  before_status  TEXT;
+  before_salt    BYTEA;
+  before_salthex TEXT;
+  before_digest  TEXT;
+  anon_label     TEXT;
 BEGIN
   -- locking the user row
   SELECT email, first_name, last_name, username, status
-    INTO v_email, v_first, v_last, v_usernm, v_status
+    INTO before_email, before_first_name, before_last_name, before_username, before_status
   FROM users
-  WHERE user_id = p_user_id
+  WHERE user_id = anon_user_id
   FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN;
   END IF;
 
-  -- idempotency
-  IF v_status = 'erased' OR EXISTS (SELECT 1 FROM users WHERE user_id = p_user_id AND anonymized_time IS NOT NULL) THEN
+  -- repeated calls won’t generate a new anon tag
+  IF before_status = 'erased' OR EXISTS (SELECT 1 FROM users WHERE user_id = anon_user_id AND anonymized_time IS NOT NULL) THEN
     RETURN;
   END IF;
 
   -- per-erasure salt and anon tag
-  v_salt    := gen_random_bytes(32);
-  v_salthex := lower(encode(v_salt, 'hex'));
-  v_digest  := slow_sha256_hex(
-                 COALESCE(v_email,'') || '|' ||
-                 COALESCE(v_first,'') || '|' ||
-                 COALESCE(v_last,'')  || '|' ||
-                 COALESCE(v_usernm,'')|| '|' ||
-                 v_salthex,
+  before_salt    := gen_random_bytes(32);
+  before_salthex := lower(encode(before_salt, 'hex'));
+  before_digest  := slow_sha256_hex(
+                 COALESCE(before_email,'') || '|' ||
+                 COALESCE(before_first_name,'') || '|' ||
+                 COALESCE(before_last_name,'')  || '|' ||
+                 COALESCE(before_username,'')|| '|' ||
+                 before_salthex,
                  30000
                );
-  v_tag := 'anon_' || substr(v_digest, 1, 12);
+  anon_label := 'anon_' || substr(before_digest, 1, 12);
 
   -- update users
   UPDATE users
-     SET first_name    = v_tag,
-         last_name     = v_tag,
-         username      = v_tag,
-         email         = v_tag || '@example.invalid',
+     SET first_name    = anon_label,
+         last_name     = anon_label,
+         username      = anon_label,
+         email         = anon_label || '@example.invalid',
          anonymized_time = now(),
-         anon_tag      = v_tag,
+         anon_tag      = anon_label,
          status        = 'erased'
-   WHERE user_id = p_user_id;
+   WHERE user_id = anon_user_id;
 
   -- update shipping_addresses
   UPDATE shipping_addresses
-     SET street       = v_tag,
-         city         = NULL,
+     SET street = anon_label,
+         city = NULL,
          state        = NULL,
          zip          = NULL,
-         phone_number = v_tag
-   WHERE user_id = p_user_id;
+         phone_number = anon_label
+   WHERE user_id = anon_user_id;
 
   -- updating orders
   UPDATE orders
-     SET email_snapshot = v_tag || '@example.invalid',
-         shipping_name      = v_tag,
-         shipping_address      = v_tag,
+     SET email_snapshot = anon_label || '@example.invalid',
+         shipping_name      = anon_label,
+         shipping_address      = anon_label,
          shipping_city      = NULL,
          shipping_state     = NULL,
          shipping_zip       = NULL
-   WHERE user_id = p_user_id;
+   WHERE user_id = anon_user_id;
 
   -- updating the payments
   UPDATE payments p
-     SET billing_name = v_tag,
-         billing_address = v_tag
+     SET billing_name = anon_label,
+         billing_address = anon_label
    FROM orders o
    WHERE o.order_id = p.order_id
-     AND o.user_id  = p_user_id;
+     AND o.user_id  = anon_user_id;
 
 END
 $$;
@@ -208,19 +210,19 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM users) THEN
     INSERT INTO users(first_name,last_name,username,email,password_hash)
-    VALUES ('Alice','Carter','alicec','alice@example.com','\x01');
+    VALUES ('Alice','Smith','aliceSmith','alice@email.com','\x01');
 
-    INSERT INTO categories(name) VALUES ('Shoes');
+    INSERT INTO categories(name) VALUES ('Pants');
 
     INSERT INTO products(product_name,price,category_id,created_by_user_id)
-    VALUES ('Red Shoe',79.00,(SELECT category_id FROM categories WHERE name='Shoes'),1);
+    VALUES ('Bootcut Jeans',79.00,(SELECT category_id FROM categories WHERE name='Pants'),1);
 
     INSERT INTO shipping_addresses(user_id,street,city,zip,state,phone_number)
-    VALUES (1,'123 Peachtree St','Atlanta','30303','GA','+1-404-555-1234');
+    VALUES (1,'123 Peachtree St','Atlanta','30303','GA','+1-404-123-1234');
 
     INSERT INTO orders(user_id,shipping_address_id,email_snapshot,shipping_name,shipping_address,shipping_city,shipping_state,shipping_zip,ship_country,tax,shipping_price,is_delivered,is_paid,total_cost)
     VALUES (1,(SELECT shipping_address_id FROM shipping_addresses WHERE user_id=1),
-            'alice@example.com','Alice Carter','123 Peachtree St','Atlanta','GA','30303','US',
+            'alice@email.com','Alice Smith','123 Peachtree St','Atlanta','GA','30303','US',
             6.00,5.00,false,true,90.00);
 
     INSERT INTO order_items(order_id,product_id,quantity,price)
@@ -229,6 +231,6 @@ BEGIN
 
     INSERT INTO payments(order_id,psp_ref,last4,billing_name,billing_address)
     VALUES ((SELECT order_id FROM orders WHERE user_id=1 LIMIT 1),
-            'ch_123','4242','Alice Carter','123 Peachtree St');
+            'ch_123','4242','Alice Smith','123 Peachtree St');
   END IF;
 END $$;
